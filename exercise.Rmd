@@ -1,0 +1,642 @@
+---
+Author: "Kirath Singh"
+date: "4/20/20"
+---
+
+
+```{r}
+library(pdftools) # Reads pdf documents into text strings
+library(tm) # Text cleaning for large corpa similar to tidytext it can help with cleaning and tokenizing
+library(quanteda) # Text cleaning for large corpa similar to tidytext tokenizing
+library(tidytext) # For analysis of text in a tidy manner including sentiment data
+library(textstem) # For stemming and lemmatizing text
+library(gutenbergr) # Project Gutenberg books
+library(wordcloud) # For world cloud
+
+library(lsa) # For latent semantic analysis
+library(stm) # For structural topic modeling
+library(uwot) # For umap dimensionality reduction
+library(text2vec) # For cosine similarity 
+library(kernlab) # For kernel-based cannonical correlation analysis
+library(rPref) # For pareto frontier\
+library(DT) # For interactive data tables
+library(textdata) # Database of lexicon and embeddings
+
+library(knitr)
+library(ggrepel)
+library(caret) # For predictive model fitting
+library(tidyverse)
+library(patchwork)
+
+set.seed(888)
+rm(list = ls()) 
+```
+
+
+#Reading the data from the 9 readings of ISYE 601
+
+```{r}
+data_path = "../data/papers"   # folder that contains the papers
+files = dir(data_path, pattern = "*.pdf") # files to read
+
+docs.df = data_frame(document = files) %>%         # creates a data frame with file names
+       mutate(text = map(document, ~ pdf_text(file.path(data_path, .))) # reads and converts pdf files to text
+        )  
+
+
+## Creates a clean name and separates file name into file number and name
+docs.df$document = gsub('.pdf', '', docs.df$document)  # removes extension from file name
+
+docs.df = docs.df %>% separate(document, into = c("number", "title"), # creates two variables from file name
+                sep = "\\.", remove = FALSE)
+
+rm(files, data_path) 
+print(docs.df)
+```
+#Tokenisation and cleaning of the data from the pdf files.
+1. The omission of words including numbers is quite essential because all the pdf files contain page number and other numbers that are not requisite, and on top of that,numeric words do not
+   provide any valuable information or sentiment behind the statement it is used in.
+   
+2. The removal of periods is required due to the lack of substantial information provided by them in a document.
+
+3. The removal of the word 'fig' is because it is just used to indicate various figures in the document, hence lacks any useful insight.
+
+4. The idea behind removal of 'zig' and 'smm' is same as explained above.
+
+5. If the use case of word embeddings is only for similarity task, then we can eliminate certain punctuations. For example alzheimer’s could be made alzheimers because input corpus may contain    both versions - it does not make sense to learn separate word embeddings for both. So we could remove punctuations like single quote character (‘) (one thing to watch out for when doing       this particularly for large corpus of text - there are many utf8 codes for the same single quote character (‘) . So we need to remove all those variations).
+
+6. Conversion of the entire corpus to lowercase since it makes no sense distinguish, say “Occidental” from “occidental” if we are going to use word embeddings only for similarity measure         applications. This may not be the case however if we are going to use the word embeddings as input representation of words in a sequence model (RNN,LSTM - a tagging task) where casing         matters. One boundary case here to consider is to preserve all upper case words without conversion, so that acronyms stay different from the lower case equivalent words. That is we ideally    want to generate a separate word embedding for acronym OR from the word common word or.
+
+7. The removal of words with length less than a threshold value (2 or 3) is essential as the list of most frequently occuring words mostly contains words that are smaller than or equal to 2.
+   These words do not portray as useful insight of the documents.
+
+8. Then we need to remove very long words as they are also the words that seldom occur in the documents, hence cannot be considered during text analysis.
+
+9. Stopwords are the most frequently occuring words in the corpus, these words, do not provide us any insights during text analysis.
+
+10. While reading some text analysis articles, there were several instances where the urls of webpages were also removed. I personally think we should omit the website links as they lack any      substantial information pertaining to the analysis.The article can be found here                                     h    https://books.google.com.sg/books?id=BXMzDwAAQBAJ&pg=PA367&lpg=PA367&dq=why+do+we+remove+words+with+length+less+than+2+during+text+analysis&source=bl&ots=yHYHFsthgP&sig=ACfU3U2AVhSWI0OFhkFE-ik     BolHfSTp-uQ&hl=en&sa=X&ved=2ahUKEwif0JX7q_boAhVP7HMBHW3FDYwQ6AEwD3oECAkQAQ#v=onepage&q=why%20do%20we%20remove%20words%20with%20length%20less%20than%202%20during%20text%20analysis&f=false
+
+11. The goal of both stemming and lemmatization is to reduce inflectional forms and sometimes derivationally related forms of a word to a common base form. For instance:
+    am, are, is => be
+    car, cars, car's, cars' => car
+    Stemming usually refers to a crude heuristic process that chops off the ends of words in the hope of achieving this goal correctly most of the time, and often includes the removal of          derivational affixes. Lemmatization usually refers to doing things properly with the use of a vocabulary and morphological analysis of words, normally aiming to remove inflectional endings     only and to return the base or dictionary form of a word, which is known as the lemma
+    Article for this can be found here :-
+    https://nlp.stanford.edu/IR-book/html/htmledition/stemming-and-lemmatization-1.html
+    
+    
+
+```{r}
+docs.df$text = gsub('[0-9]+', '', docs.df$text) # Removes words that include numbers
+docs.df$text = gsub('[.]+', '', docs.df$text) # Removes words with periods
+docs.df$text = gsub('doi', '', docs.df$text) # Removes non-word "doi"
+docs.df$text = gsub('fig', '', docs.df$text) # Removes non-word
+docs.df$text = gsub('zij', '', docs.df$text) # Removes non-word 
+docs.df$text = gsub('smm', '', docs.df$text) # Removes non-word 
+  
+## Tokenize based on word as token and remove punctuation and convert to lower case
+text.df = docs.df %>% 
+    unnest_tokens(term, text, token = "words", 
+                 to_lower = TRUE, 
+                 strip_punct = TRUE) 
+  
+## Remove one-letter and two-letter words
+  text.df = text.df %>% filter(str_length(term)>2)
+  
+## Remove very long words--spurious words created by pdf reader
+  text.df = text.df %>% filter(str_length(term)<15)
+  
+## Remove stopwords
+  text.df = text.df %>% 
+    anti_join(get_stopwords(), by = c("term" = "word"))
+  
+
+## Stem and lemmatize using textstem package
+# This step can be useful when the sample is relatively small  and some important aspects might be lost if similar words were eliminated
+# because they occur infrequently in their inflected variations (e.g., compute, and computed)
+
+# text.df$term = stem_words(text.df$term) # Converts word to its stem, which might not be a word, such as "computational" >> "comput"
+# Stem completion can convert back to a word based on the most frequent original form
+
+text.df$term = lemmatize_words(text.df$term) # Similar to stemming, but returns a word and takes longer
+
+
+## Plot number of words remaining after processing documents
+text.df %>% count(document) %>% 
+ggplot(aes(n, reorder(document, -n))) +
+  geom_col()+
+  labs(x = "Total words in document", y = "")
+```
+
+#Visualization of the  ISYE601 reading corpus.
+Word clouds present a low-cost alternative for analyzing text from online surveys, plus it's much faster than coding. Essentially, word clouds generators work by breaking the text down into component words and counting how frequently they appear in the body of text. Next, the font point size is assigned to words in the cloud based on the frequency that the word appears in the text: the more frequently the word appears, the larger the word is shown in the cloud. Instead of discussing the technicalities of how word clouds are created, here are some of my thoughts as to the pros and cons of using word clouds to represent your research data.
+
+Pros of wordcloud
+1. It reveals the essential words in a corpus during text analysis.
+
+2. They delight and provide emotional connection. Both the creation of a word-cloud and the observation of one help to provide an overall sense of the text. The same visceral response doesn't    happen when staring at a page of text.
+
+3. They're engaging. Visual representation of data tends to have an impact and generates interest amongst the audience.
+
+
+
+```{r}
+tfidf.text.df = text.df %>% count(document, term) %>% 
+  bind_tf_idf(term, document, n)
+
+## Filter infrequent words
+tfidf.text.df = tfidf.text.df %>% filter(n>8)
+
+## Filter indiscriminate words--very low tf_idf words
+tfidf.text.df = tfidf.text.df %>% filter(tf_idf>.000001)
+
+## Create wordcloud of 150 terms
+wordcloud(tfidf.text.df$term, tfidf.text.df$n, min.freq = 25)
+
+## Plot most discriminating terms
+top10.df = tfidf.text.df %>% group_by(document) %>% top_n(10, tf_idf) %>% 
+  ungroup() %>% 
+  mutate(document = as.factor(document))
+
+ggplot(top10.df, aes(reorder_within(term, tf_idf, within = document), tf_idf)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(.~document, scales = "free")+
+  scale_x_reordered() 
+
+## Scatterplot of term frequency and inverse document frequency for each document
+ggplot(top10.df, aes(idf, tf, size = tf_idf)) +
+  geom_point(shape = 21, size = .75) +
+  geom_text_repel(aes(label = term, size = tf_idf)) +
+  facet_wrap(.~document) +
+  theme_bw() +
+  theme(legend.position = "none")
+
+## A single plot of the top tf_idf terms across all documents
+ggplot(top10.df, aes(idf, tf, size = tf_idf)) +
+  geom_point(shape = 21, size = 1) +
+  geom_text_repel(aes(label = term, size = tf_idf)) +
+  theme_bw() +
+  coord_trans(y="log") +
+  theme(legend.position = "none")
+
+rm(top10.df)
+```
+```{r}
+# Convert from tidy format to termXdocument matrix
+tdm_weighted.tdmat = cast_tdm(tfidf.text.df, term, document, tf_idf)
+tdm_count.tdmat = cast_tdm(tfidf.text.df, term, document, n)
+
+lsa_model <- lsa(tdm_count.tdmat,  dims=dimcalc_share(share = .75)) 
+# dimcalc_share retains that dimensions that retain the required share of the total variance
+
+## Dimensions of the LSA space
+# The singular value has a maximum dimensions of the number of documents
+dim(lsa_model$tk) # Terms x LSA space
+dim(lsa_model$dk) # Documents x LSA space
+length(lsa_model$sk) # Singular values
+
+## Shows expected value of word frequency that for each document
+as.textmatrix(lsa_model)
+
+## Calculates LSA on tf_idf weighted terms
+lsa_model = lsa(tdm_weighted.tdmat,  dims=dimcalc_share(share = .75))
+
+rm(tdm_count.tdmat)
+```
+
+
+
+
+
+As it is quite evident from the dendrogram below, at height 2, there are 3 clusters, thus the lsa_model segregates the reading in mainly 3 different types as specified by the Hierarchical clustering algorithm we used below.
+
+
+
+```{r}
+## Cosine similarity is equal to 1 for identical documents
+doc.similiarity.mat = cosine(t(lsa_model$dk)) # The d component describes the documents 
+
+## Calculates the mean tf_idf of each term and selects top 70 
+temp = tfidf.text.df %>% 
+  group_by(term) %>% 
+  summarise(m.tf_idf = mean(tf_idf)) %>% 
+  cbind(lsa_model$tk) %>% top_n(70, m.tf_idf) 
+
+# Cosine similarity of terms
+row.names(temp)= temp$term
+term.similiarity.mat = cosine(t(temp %>% select(-term, -m.tf_idf))) 
+
+doc.dissimilarity.dist = as.dist(1-doc.similiarity.mat)
+term.dissimilarity.dist = as.dist(1-term.similiarity.mat)
+
+## Hierarchical clustering
+# Setting method = ward.d2 corresponds to agnes clustering
+doc.cluster = hclust(doc.dissimilarity.dist, method = "ward.D2", members = NULL)
+plot(doc.cluster)
+
+term.cluster = hclust(term.dissimilarity.dist, method = "ward.D2", members = NULL)
+plot(term.cluster)
+
+rm(temp)
+```
+
+
+#Dimensionality reduction
+In statistics, machine learning, and information theory, dimensionality reduction or dimension reduction is the process of reducing the number of random variables under consideration by obtaining a set of principal variables. Approaches can be divided into feature selection and feature extraction.
+
+
+
+```{r}
+term.umap = umap(lsa_model$tk, n_neighbors = 20, n_components = 2) %>% 
+  as.tibble()
+
+names(term.umap) = c("umap_1", "umap_2")
+
+## Add tf_idf information
+term.umap = tfidf.text.df %>% group_by(term) %>% 
+  summarise(m.tf_idf = max(tf_idf)) %>%
+  cbind(term.umap) 
+
+## Plot UMAP of terms
+term.umap.plot = 
+  ggplot(term.umap, aes(umap_1, umap_2)) +
+  geom_point(aes(size=m.tf_idf),shape = 21) +
+  geom_label_repel(data = term.umap %>% top_n(175, m.tf_idf),
+                   aes(label = term), alpha = .6, size = 3) +
+  labs(title = "UMAP clustering", subtitle = "20 nearest neighbors") +
+  theme_void()+
+  theme(legend.position = "none")
+term.umap.plot
+
+
+## Plot UMAP of documents
+doc.umap = 
+  umap(lsa_model$dk, n_neighbors = 3, n_components = 2) %>% 
+  as.tibble()
+names(doc.umap) = c("umap_1", "umap_2")
+doc.umap = cbind(docs.df, doc.umap)
+
+doc.umap.plot = 
+  ggplot(doc.umap, aes(umap_1, umap_2)) +
+  geom_point(aes(colour = number), size = 2.5) +
+  geom_label_repel(aes(label = document, fill = number), alpha = .6, size = 3) +
+  labs(title = "UMAP clustering", subtitle = "3 nearest neighbors") +
+  theme(legend.position = "none")
+doc.umap.plot
+
+ggsave(doc.umap.plot, filename = "doc.umap.pdf", width = 8, height = 8)
+
+rm(term.umap, term.cluster, doc.umap.plot, doc.umap)
+```
+
+
+
+
+
+
+
+#The topics that describe the reading of the semester so far are:-
+ Topic 1: design, people, human, factor, technology 
+ Topic 2: datum, algorithm, decision, bias, say 
+ Topic 3: datum, causal, science, inference, learn 
+ Topic 4: learn, bias, environment, example, information 
+ Topic 5: datum, analysis, program, research, allow 
+ Topic 6: product, guideline, user, design, participant 
+ Topic 7: advice, human, forecast, advisor, computer 
+ Topic 8: behavior, trigger, motivation, fbm, ability 
+ Topic 9: word, gender, bias, embed, analogy 
+ Topic 10: analysis, code, datum, process, test 
+ Topic 11: causal, datum, model, learn, level 
+ Topic 12: explanation, model, network, prediction, method 
+ Topic 13: user, datum, human, action, interaction 
+
+
+
+
+```{r}
+## Convert tidytext to spars metrix for stm analysis
+text.sparse = tfidf.text.df %>% cast_sparse(document, term, n)
+
+## Fit structural topic model for a range of topics
+multi_stm.fit = searchK(text.sparse, 
+                      K= c(3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13), 
+                      M = 12, # number of top words for exclusivity calculation
+                      init.type = "Spectral",
+                      N = 4, # Number of documents partially held out, 10% by default
+                      proportion = 0.5, # Held out documents for likelihood calculation
+                      heldout.seed = 888, cores = 1)
+ 
+## Plot topic metrics
+# Higher heldout likelihood the better 
+# Lower residual dispersion the better
+# Higher semantic coherence and exclusivity
+# Higher lower bound of the marginal likelihood (evidence)
+plot(multi_stm.fit)
+
+
+## Plot pareto curve of exclusivity and coherence 
+# Coherence (high probablity terms of a topic occur together in documents)
+# Exclusivity (high probablity terms of a topic are not high probability tersm in other topics)
+# Mimno, D., Wallach, H. M., Talley, E., & Leenders, M. (2011). Optimizing Semantic Coherence in Topic Models, (2), 262–272.
+
+multifit.results = multi_stm.fit$results
+
+sky <- psel(multifit.results, high(semcoh) * high(exclus))
+CoherenceExclusivity.plot = ggplot(multifit.results, aes(semcoh, exclus))+
+  geom_point()+
+  geom_text_repel(aes(label = K)) +
+  geom_step(data = sky, direction = "hv") +
+  labs(y = "Exclusivity", x = "Coherence")
+CoherenceExclusivity.plot
+
+
+sky <- psel(multifit.results, high(heldout) * high(bound))
+LikelihoodBound.plot = ggplot(multifit.results, aes(heldout, bound))+
+  geom_point() +
+  geom_text_repel(aes(label = K)) +
+  geom_step(data = sky, direction = "hv") +
+  labs(y = "Heldout likelihood", x = "Lower bound of marginal likelihood")
+LikelihoodBound.plot
+
+rm(LikelihoodBound.plot, multifit.results, CoherenceExclusivity.plot, sky)
+```
+```{r}
+## Convert tidy data to sparse matrix
+text.sparse = tfidf.text.df %>% cast_sparse(document, term, n)
+
+## Fit topic model
+topic_model = stm(text.sparse, K = 8, 
+                   control = list(eta = .01, alpha = 50/8), 
+                  # eta sets the topic-word hyperparameter . Defaults to .01
+                  # alpha sets the prevalence hyperparameter. Defaults to 50/K),
+                  verbose = FALSE, init.type = "Spectral")
+
+## Extract word-topic combinations
+td_beta = tidy(topic_model) 
+
+## Extract terms with the highest proportion in topics
+td_beta =
+   td_beta %>%
+    group_by(topic) %>%
+    top_n(10, beta) %>%
+    ungroup()
+
+## Add FREX-base based labels
+# FREX words distinguish topics because they are both frequent and exclusive
+frex = labelTopics(topic_model, n = 4)$frex %>% as.tibble() %>% unite(col = topic_name) 
+frex = cbind(topic = labelTopics(topic_model, n = 3)$topicnums, frex)
+frex$topic_number_name = paste(frex$topic, frex$topic_name, sep = "-") 
+td_beta = left_join(td_beta, frex)
+
+  
+## Plot term proportion for labeled topics  
+td_beta_ordered = td_beta %>% 
+  mutate(term_ordered = reorder_within(term , beta, topic))
+
+ggplot(td_beta_ordered, aes(term_ordered, beta)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(.~topic_number_name, scales = "free")+
+  labs(title = "Prevalence of terms across topics", 
+         x = "term", y = "Term prevalence (beta)") +
+  scale_x_reordered() 
+
+
+## Extract document-topic combinations
+td_gamma =
+    tidy(topic_model, matrix = "gamma",
+         document_names = rownames(text.sparse))
+
+## Plot prevalence of topics across documents
+td_gamma = 
+    td_gamma %>% group_by(document) %>%
+    mutate(dominant_topic = which.max(gamma))
+
+topic_names = td_beta %>% select(topic, topic_number_name) %>% distinct()
+td_gamma = left_join(td_gamma, topic_names , by = "topic")
+  
+ggplot(td_gamma, aes(as.factor(topic), gamma, fill = as.factor(topic_number_name))) +
+    geom_col(width = .8, position = position_dodge(width = .2, preserve = "single")) +
+    facet_grid(reorder(interaction(dominant_topic, document), dominant_topic)~.,
+               scales = "free_x", drop = TRUE) +
+    labs(title = "Prevalence of topics across documents", subtitle = "Most documents have one topic",
+         x = "Topic", y = "Topic prevalence (gamma)") +
+    theme(legend.position = "bottom", 
+            axis.text.y = element_blank(),
+            axis.ticks = element_blank(),
+             strip.text.y = element_text(angle =0, hjust = 0))
+
+rm(td_beta, td_gamma, frex, topic_names)
+```
+```{r}
+
+
+```
+```{r}
+## Calculate the total positive and negative sentiment per document
+sentiment.df = text.df %>% group_by(document) %>% 
+  mutate(total_terms = n()) %>% ungroup() %>% # Count terms first to identify the proportion of sentimental terms
+  inner_join(get_sentiments("bing"), by=c("term" = "word")) %>%
+  group_by(document, sentiment) %>% 
+  summarise(n = n(), total_terms= first(total_terms)) %>% 
+  ungroup() %>% group_by(document) %>% 
+  mutate(proportion = n/total_terms) %>% group_by(document, sentiment) %>% 
+  mutate(signed.proportion = replace(proportion, sentiment=="negative", -proportion)) %>% 
+  ungroup() %>% 
+  group_by(document) %>% 
+  mutate(sum_sentiment = sum(signed.proportion))
+
+## Plot sentiment per document
+ggplot(sentiment.df, 
+       aes(reorder(document, sum_sentiment), signed.proportion, fill = sentiment))+
+  geom_col() +
+  coord_flip() +
+  labs(x = "Documents ordered by net proportion of positive sentiment", 
+       y = "Proportion of positive and negative words") +
+  theme(legend.position = "none")
+```
+
+
+
+#The 2 words whose meaning in this context could distort the estimated sentiment are good,bias
+
+
+```{r}
+
+influence_sentiment.df = text.df %>% 
+  inner_join(get_sentiments("bing"), by=c("term" = "word")) %>% 
+  count(document, sentiment, term) %>% 
+  group_by(document, sentiment) %>% 
+  top_n(n, n = 5) %>% slice(1:5) %>% # Limits to 5 in case of ties
+  mutate(signed.sentiment = replace(n, sentiment=="negative", -n))  
+  
+
+ggplot(influence_sentiment.df, aes(reorder_within(term, n, document), signed.sentiment, fill = sentiment)) +
+  geom_col() +
+  coord_flip() +
+  facet_wrap(.~document, scales = "free")+
+  scale_x_reordered() +
+  labs(x= "Words that strongly contribute to document sentiment", y = "Positive and negative sentiment") +
+  theme(legend.position = "none")
+```
+```{r}
+glove = read_delim(file = "../glove.6B.100d.txt", 
+                   progress =FALSE,
+                   col_names = FALSE, delim = " ", quote = "")
+names(glove)[1] = "token"
+
+## Extract vectors for king, man, and queen
+man = glove %>% filter(token=="man") %>% select(-token)
+son = glove%>%filter(token=="son") %>% select(-token)
+woman = glove%>%filter(token=="woman") %>% select(-token)
+
+## Calculate woman analog of son
+# daughter-woman = son-man
+female_child = son-man+woman
+
+## Convert the glove and female_child data frames into vectors
+x = glove %>% select(-token) %>% as.matrix() # The 
+y = as.matrix(female_child) # Vector 
+
+library(text2vec)
+## Calculate the cosine distance between "female_child" and all other word embedding
+cos_sim = sim2(x, y, method = "cosine", norm = "l2")
+
+# Identify and plot similar words
+similar_words = cbind(glove$token, cos_sim) %>% # Matches word embedding to words
+  as.tibble() %>% 
+  mutate(term = V1, similarity = as.numeric(V2)) %>% 
+  arrange(desc(similarity)) %>% dplyr::slice(1:15)
+
+ggplot(similar_words, aes(reorder(term, similarity), similarity)) +
+  geom_col() +
+  coord_flip() +
+  labs(title = "Words that are closest to: female_child = son-man+woman", 
+       x = "Closest terms", y = "Similarity")
+
+```
+
+
+
+```{r}
+## Similar to sentiment lexicon, word embeddings can be added to describe the terms in documents
+glovec.text.df = text.df %>% 
+  inner_join(glove, by=c("term" = "token"))
+
+## Document embeddings can be created by averaging the term embedding
+s.glovec.text.df = glovec.text.df %>% 
+  gather(key = glovec_id, value = glovalue, contains("X")) %>% 
+  group_by(document, glovec_id) %>% 
+  summarise(m.glovalue = mean(glovalue)) %>% 
+  spread(key = glovec_id, value = m.glovalue) %>% 
+  ungroup()
+
+## Calculate document distance based on cosine similarity of generic embedding 
+
+doc.similiarity.mat = cosine(t(s.glovec.text.df %>% select(contains("X")) %>% as.matrix()))  
+row.names(doc.similiarity.mat) = as.vector(s.glovec.text.df$document)
+  
+doc.dissimilarity.dist = as.dist(1-doc.similiarity.mat)
+
+
+## Hierarchical clustering of documents
+# Setting method = ward.d2 corresponds to agnes clustering
+doc.cluster = hclust(doc.dissimilarity.dist, method = "ward.D2", members = NULL)
+plot(doc.cluster)
+```
+#The GLOVE UMAP represents the reading in a beter way as compared to LSA UMAP as the GLOVE UMAP has well defined clusters with clearly defined boundaries and the documents have more cor-relation in the GLOVE UMAP as compared to the LSA UMAP
+
+
+```{r}
+doc.umap = s.glovec.text.df %>% select(starts_with("X")) %>% 
+   umap(n_neighbors = 3, n_components = 2) %>% 
+   as.tibble()
+ names(doc.umap) = c("umap_1", "umap_2")
+ doc.umap = cbind(docs.df, doc.umap)
+ 
+
+doc.umap.plot = 
+  ggplot(doc.umap, aes(umap_1, umap_2)) +
+  geom_point(aes(colour = number), size = 2.5) +
+  geom_label_repel(aes(label = document, fill = number), alpha = .6, size = 3) +
+  labs(title = "UMAP clustering", subtitle = "3 nearest neighbors") +
+  theme_void()+
+  theme(legend.position = "none")
+doc.umap.plot
+
+
+```
+
+
+
+
+
+
+```{r}
+## Match terms to glove embedding
+terms.df = tfidf.text.df %>% group_by(term) %>% 
+  summarise(m.tf_idf = max(tf_idf)) %>% 
+  inner_join(glove, by=c("term" = "token"))
+
+## Calculate umap dimensions
+term.umap = terms.df %>% select(starts_with("X")) %>% 
+  umap(n_neighbors = 10, n_components = 2) %>% 
+  as.tibble()
+names(term.umap) = c("umap_1", "umap_2")
+
+term.umap =  terms.df %>%
+  cbind(term.umap) 
+
+
+## Plot UMAP of terms
+term.umap.plot = 
+  ggplot(term.umap, aes(umap_1, umap_2)) +
+  geom_point(aes(size=m.tf_idf),shape = 21) +
+  geom_label_repel(data = term.umap %>% top_n(100, m.tf_idf),
+                   aes(label = term), alpha = .6, size = 3) +
+  labs(title = "UMAP clustering", subtitle = "20 nearest neighbors") +
+  theme_void()+
+  theme(legend.position = "none")
+term.umap.plot
+
+```
+
+The combined embedding does a better job as it is able to capture better the nuances of word and sensesas compared to the previous ones.
+
+```{r}
+combined.embedding = cbind(s.glovec.text.df, lsa_model$dk)
+
+glovector = s.glovec.text.df %>% select(contains("X")) %>% as.matrix
+
+
+combined.embedding.kcca = kcca(lsa_model$dk, glovector,
+     kernel="rbfdot", kpar=list(sigma=0.1),
+     gamma = 0.1, ncomps = 30)
+
+combined.embedding.kcca.mat = cbind(combined.embedding.kcca@xcoef, combined.embedding.kcca@xcoef)
+
+
+doc.similiarity.mat = cosine(t(combined.embedding.kcca.mat))  
+row.names(doc.similiarity.mat) = as.vector(s.glovec.text.df$document)
+  
+doc.dissimilarity.dist = as.dist(1-doc.similiarity.mat)
+
+
+## Hierarchical clustering
+# Setting method = ward.d2 corresponds to agnes clustering
+doc.cluster = hclust(doc.dissimilarity.dist, method = "ward.D2", members = NULL)
+plot(doc.cluster)
+
+```
+
+#Bonus Answer
+“datum” features so prominently in the analysis but occurs rarely in the papers because of the fact that the sentiment behind the word "datum" is high positive and low negative.Hence it features prominently even though the frequency of its occurence is not as high as expected.
+For ex. 
+Consider a movie review:-
+The word "funny" can be a prominent feature for a comedy movie but it can be a non-prominent feature for a movie thats not a funny movie.
+
+
+
+
+
+
